@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -51,6 +52,7 @@ type Service interface {
 	SetIAMPolicy(ctx context.Context, obj *ServiceBucket, member, roleName string) error
 	RemoveIAMPolicy(ctx context.Context, obj *ServiceBucket, member, roleName string) error
 	CheckBucketExists(ctx context.Context, obj *ServiceBucket) (bool, error)
+	UploadObject(ctx context.Context, bucketName, objName, content string) error
 	Close()
 }
 
@@ -213,6 +215,19 @@ func (service *gcsService) RemoveIAMPolicy(ctx context.Context, obj *ServiceBuck
 		return fmt.Errorf("failed to set bucket %q IAM policy: %w", obj.Name, err)
 	}
 
+	return nil
+}
+
+func (service *gcsService) UploadObject(ctx context.Context, bucketName, objName, content string) error {
+	o := service.storageClient.Bucket(bucketName).Object(objName)
+	wc := o.NewWriter(ctx)
+	if _, err := io.Copy(wc, strings.NewReader(content)); err != nil {
+		return fmt.Errorf("io.Copy: %w", err)
+	}
+	if err := wc.Close(); err != nil {
+		return fmt.Errorf("Writer.Close: %w", err)
+	}
+	klog.Infof("Blob %v uploaded", objName)
 	return nil
 }
 

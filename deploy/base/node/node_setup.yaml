@@ -51,3 +51,26 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: gcsfusecsi-node-sa
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  namespace: default 
+  name: gcs-fuse-csi-node-token-creator-role
+rules:
+- apiGroups: [""]
+  resources: ["serviceaccounts/token"]
+  verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gcsfusecsi-node-sa-token-binding
+subjects:
+- kind: ServiceAccount
+  name: gcsfusecsi-node-sa
+  namespace: gcs-fuse-csi-driver 
+roleRef:
+  kind: ClusterRole 
+  name: gcs-fuse-csi-node-token-creator-role
+  apiGroup: rbac.authorization.k8s.io 

@@ -86,5 +86,9 @@ func (service *fakeService) CheckBucketExists(_ context.Context, obj *ServiceBuc
 	return false, storage.ErrBucketNotExist
 }
 
+func (service *fakeService) UploadObject(_ context.Context, bucketName, objName, content string) error {
+	return nil
+}
+
 func (service *fakeService) Close() {
 }

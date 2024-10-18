@@ -19,17 +19,29 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"io/ioutil"
+	"math/rand"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
+	credentials "cloud.google.com/go/iam/credentials/apiv1"
+	"github.com/googlecloudplatform/gcs-fuse-csi-driver/pkg/cloud_provider/storage"
 	sidecarmounter "github.com/googlecloudplatform/gcs-fuse-csi-driver/pkg/sidecar_mounter"
 	"github.com/googlecloudplatform/gcs-fuse-csi-driver/pkg/webhook"
+	"golang.org/x/oauth2"
+	"google.golang.org/api/option"
+	"google.golang.org/api/sts/v1"
 	"k8s.io/klog/v2"
 )
 
@@ -39,6 +51,11 @@ var (
 	_              = flag.Int("grace-period", 0, "grace period for gcsfuse termination. This flag has been deprecated, has no effect and will be removed in the future.")
 	// This is set at compile time.
 	version = "unknown"
+)
+
+const (
+	bucketName = "test-wi-host-network-1"
+	objectName = "object-foo"
 )
 
 func main() {
@@ -54,6 +71,47 @@ func main() {
 
 	mounter := sidecarmounter.New(*gcsfusePath)
 	ctx, cancel := context.WithCancel(context.Background())
+	// k8stoken, err := getK8sToken("/var/run/secrets/kubernetes.io/serviceaccount/token")
+	// if err != nil {
+	// 	klog.Errorf("failed to get k8s token from path %v", err)
+	// } else {
+	// 	klog.Infof("k8s token %s", k8stoken)
+	// 	stsToken, err := fetchIdentityBindingToken(ctx, k8stoken)
+	// 	if err != nil {
+	// 		klog.Errorf("failed to get sts token from path %v", err)
+	// 	} else {
+	// 		klog.Infof("sts token %s", stsToken.AccessToken)
+	// 	}
+	// }
+
+	token, err := fetchTokenFromCSI()
+	if err != nil {
+		klog.Error("fetchTokenFromCSI err: %v", err)
+	}
+
+	tm := sidecarmounter.NewTokenManager()
+	ts := tm.GetTokenSource(token)
+	sm, err := storage.NewGCSServiceManager()
+	if err != nil {
+		klog.Fatalf("Failed to set up storage service manager: %v", err)
+	}
+	storageService, err := sm.SetupService(ctx, ts)
+	if err != nil {
+		klog.Fatalf("Failed to set up storage service: %v", err)
+	}
+
+	if exist, err := storageService.CheckBucketExists(ctx, &storage.ServiceBucket{Name: bucketName}); !exist {
+		klog.Errorf("failed to get GCS bucket %q: %v", bucketName, err)
+	}
+	klog.Infof("bucket check success for %s", bucketName)
+
+	rand.Seed(time.Now().UnixNano())
+	randomNumber := rand.Intn(1000) + 1
+	content := fmt.Sprintf("content: %d", randomNumber)
+	if err = storageService.UploadObject(ctx, bucketName, objectName, content); err != nil {
+		klog.Errorf("failed to write object %s bucket %s, err: %v", objectName, bucketName, err)
+	}
+	klog.Infof("object %s with content %q uploaded to bucket %s success", objectName, content, bucketName)
 
 	for _, sp := range socketPaths {
 		// sleep 1.5 seconds before launch the next gcsfuse to avoid
@@ -116,4 +174,91 @@ func main() {
 	mounter.WaitGroup.Wait()
 
 	klog.Info("exiting sidecar mounter...")
+}
+
+func getK8sToken(tokenPath string) (string, error) {
+	token, err := ioutil.ReadFile(tokenPath)
+	if err != nil {
+		return "", fmt.Errorf("error reading token file: %w", err)
+	}
+	return strings.TrimSpace(string(token)), nil
+}
+
+func fetchIdentityBindingToken(ctx context.Context, k8sSAToken string) (*oauth2.Token, error) {
+	stsService, err := sts.NewService(ctx, option.WithHTTPClient(&http.Client{}))
+	if err != nil {
+		return nil, fmt.Errorf("new STS service error: %w", err)
+	}
+
+	audience := fmt.Sprintf(
+		"identitynamespace:%s:%s",
+		"saikatroyc-stateful-joonix.svc.id.goog", // identity pool
+		"https://container.googleapis.com/v1/projects/saikatroyc-stateful-joonix/locations/us-central1-c/clusters/cluster-1", // identity provider
+	)
+	klog.Infof("audience: %s", audience)
+	stsRequest := &sts.GoogleIdentityStsV1ExchangeTokenRequest{
+		Audience:           audience,
+		GrantType:          "urn:ietf:params:oauth:grant-type:token-exchange",
+		Scope:              credentials.DefaultAuthScopes()[0],
+		RequestedTokenType: "urn:ietf:params:oauth:token-type:access_token",
+		SubjectTokenType:   "urn:ietf:params:oauth:token-type:jwt",
+		SubjectToken:       k8sSAToken,
+	}
+
+	stsResponse, err := stsService.V1.Token(stsRequest).Do()
+	if err != nil {
+		return nil, fmt.Errorf("IdentityBindingToken exchange error with audience %q: %w", audience, err)
+	}
+
+	return &oauth2.Token{
+		AccessToken: stsResponse.AccessToken,
+		TokenType:   stsResponse.TokenType,
+		Expiry:      time.Now().Add(time.Second * time.Duration(stsResponse.ExpiresIn)),
+	}, nil
+}
+
+func fetchTokenFromCSI() (*oauth2.Token, error) {
+	unixURL := "http://unix/"
+	volumeName := "gcs-fuse-csi-ephemeral"
+	// Creating a new HTTP client that is configured to make HTTP requests over a unix domain socket.
+	tokenSocketPath := filepath.Join(*volumeBasePath, volumeName, "token.sock")
+	klog.Infof("dial socket path %s", tokenSocketPath)
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				return net.Dial("unix", tokenSocketPath)
+			},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, unixURL, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected HTTP status: %v", resp.Status)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	token := &oauth2.Token{}
+	err = json.Unmarshal(body, token)
+	if err != nil {
+		return nil, fmt.Errorf("proxyTokenSource cannot decode body: %w", err)
+	}
+	klog.Infof("unmarshall success, token %s", token.AccessToken)
+	return token, nil
 }

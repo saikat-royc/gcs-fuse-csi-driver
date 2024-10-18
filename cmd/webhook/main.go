@@ -44,7 +44,7 @@ var (
 	certDir                 = flag.String("cert-dir", "/etc/tls-certs", "The directory that contains the server key and certificate.")
 	certName                = flag.String("cert-name", "cert.pem", "The server certificate name.")
 	keyName                 = flag.String("key-name", "key.pem", "The server key name.")
-	imagePullPolicy         = flag.String("sidecar-image-pull-policy", "IfNotPresent", "The default image pull policy for gcsfuse sidecar container.")
+	imagePullPolicy         = flag.String("sidecar-image-pull-policy", "Always", "The default image pull policy for gcsfuse sidecar container.")
 	cpuRequest              = flag.String("sidecar-cpu-request", "250m", "The default CPU request for gcsfuse sidecar container.")
 	cpuLimit                = flag.String("sidecar-cpu-limit", "250m", "The default CPU limit for gcsfuse sidecar container.")
 	memoryRequest           = flag.String("sidecar-memory-request", "256Mi", "The default memory request for gcsfuse sidecar container.")

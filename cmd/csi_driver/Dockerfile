@@ -70,7 +70,9 @@ RUN if ldd /bin/umount | grep "not found"; then echo "!!! Missing deps for umoun
 
 # Final build stage, create the real Docker image with ENTRYPOINT
 FROM output-image
-
+COPY --from=debian /lib/${LIB_DIR_PREFIX}-linux-gnu/libtinfo.so.6 /lib/${LIB_DIR_PREFIX}-linux-gnu/
+COPY --from=debian /bin/bash /bin/bash
+COPY --from=debian /bin/ls /bin/ls
 COPY --from=driver-builder /bin/gcs-fuse-csi-driver /gcs-fuse-csi-driver
 
 ENTRYPOINT ["/gcs-fuse-csi-driver"]

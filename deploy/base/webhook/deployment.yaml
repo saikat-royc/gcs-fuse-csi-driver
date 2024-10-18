@@ -60,7 +60,7 @@ spec:
             - --health-probe-bind-address=:22031
           env:
             - name: SIDECAR_IMAGE_PULL_POLICY
-              value: "IfNotPresent"
+              value: "Always"
             - name: SIDECAR_IMAGE
               valueFrom:
                 configMapKeyRef:

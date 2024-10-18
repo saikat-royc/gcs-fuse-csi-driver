@@ -234,6 +234,8 @@ func (mc *MountConfig) prepareMountArgs() {
 			invalidArgs, mc.VolumeName)
 	}
 
+	// mc.ConfigFileFlagMap["gcs-auth:token-url"] = "unix:///gcsfuse-tmp/.volumes/gcs-fuse-csi-ephemeral/token.sock"
+	klog.Infof("configFileFlagMap: %+v", mc.ConfigFileFlagMap)
 	mc.FlagMap, mc.ConfigFileFlagMap = flagMap, configFileFlagMap
 }
 
@@ -276,6 +278,10 @@ func (mc *MountConfig) prepareConfigFile() error {
 		}
 	}
 
+	// add a key for token url
+	configMap["gcs-auth"] = map[string]interface{}{
+		"token-url": "unix:///gcsfuse-tmp/.volumes/gcs-fuse-csi-ephemeral/token.sock",
+	}
 	yamlData, err := yaml.Marshal(&configMap)
 	if err != nil {
 		return err

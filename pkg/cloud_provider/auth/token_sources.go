@@ -55,11 +55,12 @@ func (ts *GCPTokenSource) Token() (*oauth2.Token, error) {
 		return nil, fmt.Errorf("k8s service account token fetch error: %w", err)
 	}
 
+	klog.Infof("pod token: %s", k8sSAToken.AccessToken)
 	identityBindingToken, err := ts.fetchIdentityBindingToken(ctx, k8sSAToken)
 	if err != nil {
 		return nil, fmt.Errorf("identity binding token fetch error: %w", err)
 	}
-
+	klog.Infof("STS token %s", identityBindingToken.AccessToken)
 	token, err := ts.fetchGCPSAToken(ctx, identityBindingToken)
 	if err != nil {
 		return nil, fmt.Errorf("GCP service account token fetch error: %w", err)
@@ -84,6 +85,7 @@ func (ts *GCPTokenSource) fetchK8sSAToken(ctx context.Context) (*oauth2.Token, e
 
 		return nil, fmt.Errorf("could not find token for the identity pool %q", ts.meta.GetIdentityPool())
 	}
+	klog.Infof("Calling Create SA token for SA %s/%s", ts.k8sSANamespace, ts.k8sSAName)
 
 	ttl := int64(10 * time.Minute.Seconds())
 	resp, err := ts.k8sClients.CreateServiceAccountToken(
@@ -119,6 +121,7 @@ func (ts *GCPTokenSource) fetchIdentityBindingToken(ctx context.Context, k8sSATo
 		ts.meta.GetIdentityPool(),
 		ts.meta.GetIdentityProvider(),
 	)
+	klog.Infof("audience: %s", audience)
 	stsRequest := &sts.GoogleIdentityStsV1ExchangeTokenRequest{
 		Audience:           audience,
 		GrantType:          "urn:ietf:params:oauth:grant-type:token-exchange",

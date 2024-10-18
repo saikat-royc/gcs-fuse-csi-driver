@@ -18,8 +18,12 @@ limitations under the License.
 package driver
 
 import (
+	"encoding/json"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -42,6 +46,12 @@ const (
 	FuseMountType = "fuse"
 )
 
+// POC constants
+const (
+	saName = "test-ksa-ns1"
+	saNs   = "ns1"
+)
+
 // nodeServer handles mounting and unmounting of GCS FUSE volumes on a node.
 type nodeServer struct {
 	csi.UnimplementedNodeServer
@@ -56,6 +66,8 @@ type nodeServer struct {
 
 type volumeState struct {
 	bucketAccessCheckPassed bool
+	// handle token requests from the target pod
+	tokenServerStarted bool
 }
 
 func newNodeServer(driver *GCSDriver, mounter mount.Interface) csi.NodeServer {
@@ -80,6 +92,117 @@ func (s *nodeServer) NodeGetCapabilities(_ context.Context, _ *csi.NodeGetCapabi
 	return &csi.NodeGetCapabilitiesResponse{
 		Capabilities: s.driver.nscap,
 	}, nil
+}
+
+func isSymLink(path string) (bool, error) {
+	fileInfo, err := os.Lstat(path)
+	if err != nil {
+		return false, err
+	}
+
+	if fileInfo.Mode()&os.ModeSymlink != 0 {
+		klog.Infof("path %s is a symlink", path)
+		return true, nil
+	}
+
+	klog.Infof("path %s is a not a symlink", path)
+	return false, nil
+}
+
+func (s *nodeServer) startTokenServer(ctx context.Context, targetPath, socketDir string, result chan<- error) {
+	emptyDirBasePath, err := util.PrepareEmptyDir(targetPath, true)
+	if err != nil {
+		klog.Errorf("failed to prepare token socket: %v", err)
+		result <- err
+		return
+	}
+
+	socketBasePath := util.GetSocketBasePath(targetPath, socketDir)
+	if err := os.Symlink(emptyDirBasePath, socketBasePath); err != nil && !os.IsExist(err) {
+		klog.Errorf("failed to create symbolic link to path %q: %v", socketBasePath, err)
+		result <- err
+		return
+	}
+
+	klog.Infof("emptyDirBasePath %s, socketBasePath %s", emptyDirBasePath, socketBasePath)
+	if _, err := isSymLink(socketBasePath); err != nil {
+		result <- err
+		return
+	}
+
+	// Create a unix domain socket and listen for incoming connections.
+	socketPath := filepath.Join(socketBasePath, "token.sock")
+	socket, err := net.Listen("unix", socketPath)
+	if err != nil {
+		klog.Errorf("failed to create socket %q: %v", socketPath, err)
+		result <- err
+		return
+	}
+	klog.Infof("created a listener using the socket path %s", socketPath)
+	// Change the socket ownership
+	if err = os.Chown(filepath.Dir(emptyDirBasePath), webhook.NobodyUID, webhook.NobodyGID); err != nil {
+		result <- fmt.Errorf("failed to change ownership on base of emptyDirBasePath: %w", err)
+		return
+	}
+	if err = os.Chown(emptyDirBasePath, webhook.NobodyUID, webhook.NobodyGID); err != nil {
+		result <- fmt.Errorf("failed to change ownership on emptyDirBasePath: %w", err)
+		return
+	}
+	if err = os.Chown(socketPath, webhook.NobodyUID, webhook.NobodyGID); err != nil {
+		result <- fmt.Errorf("failed to change ownership on targetSocketPath: %w", err)
+		return
+	}
+
+	if _, err = os.Stat(socketPath); err != nil {
+		result <- fmt.Errorf("failed to verify the targetSocketPath: %w", err)
+	}
+	klog.Infof("changed ownership of socket path %s", socketPath)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		_, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		klog.Infof("got request on socket path %s", socketPath)
+		queryParams := r.URL.Query()
+		for key, values := range queryParams {
+			klog.Infof("Query parameter %q: %v", key, values)
+		}
+
+		ts := s.driver.config.TokenManager.GetTokenSourceFromK8sServiceAccount(saNs, saName, "")
+		token, err := ts.Token()
+		if err != nil {
+			klog.Errorf("failed to fetch token: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		klog.Infof("for SA %s/%s got token %s", saNs, saName, token.AccessToken)
+		// w.WriteHeader(http.StatusOK)     // Set the status code to 200 OK
+		// fmt.Fprint(w, token.AccessToken) // Write "ack" to the response body
+
+		// Marshal the oauth2.Token object to JSON
+		jsonToken, err := json.Marshal(token)
+		if err != nil {
+			klog.Errorf("failed to marshal token to JSON: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, string(jsonToken))
+	})
+
+	server := http.Server{
+		Handler:      mux,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+	}
+
+	result <- nil
+	if err := server.Serve(socket); err != nil {
+		klog.Errorf("failed to start the token server for %q: %v", socketPath, err)
+	}
 }
 
 func (s *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
@@ -156,6 +279,25 @@ func (s *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublish
 	if s.driver.config.MetricsManager != nil && !disableMetricsCollection {
 		klog.V(6).Infof("NodePublishVolume enabling metrics collector for target path %q", targetPath)
 		s.driver.config.MetricsManager.RegisterMetricsCollector(targetPath, pod.Namespace, pod.Name, bucketName)
+	}
+
+	// prepare a server to listen for token requests
+	vs, ok := s.volumeStateStore[targetPath]
+	if !ok {
+		s.volumeStateStore[targetPath] = &volumeState{}
+		vs = s.volumeStateStore[targetPath]
+	}
+
+	if !vs.tokenServerStarted {
+		errChan := make(chan error)
+		go s.startTokenServer(ctx, targetPath, "/sockets", errChan)
+		err := <-errChan
+		if err != nil {
+			klog.Errorf("Failed to start token server: %v", err)
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+		klog.Infof("Started token server")
+		vs.tokenServerStarted = true
 	}
 
 	// Check if the sidecar container is still required,
