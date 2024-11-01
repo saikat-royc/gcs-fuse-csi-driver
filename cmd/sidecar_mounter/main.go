@@ -51,6 +51,8 @@ var (
 	_              = flag.Int("grace-period", 0, "grace period for gcsfuse termination. This flag has been deprecated, has no effect and will be removed in the future.")
 	// This is set at compile time.
 	version = "unknown"
+	// tokenUrlSocketPath = "/gcsfuse-tmp/token.sock"
+	tokenUrlSocketPath = "/gcsfuse-tmp/.volumes/gcs-fuse-csi-ephemeral/token.sock"
 )
 
 const (
@@ -69,28 +71,25 @@ func main() {
 		klog.Fatalf("failed to look up socket paths: %v", err)
 	}
 
+	var stsToken *oauth2.Token
 	mounter := sidecarmounter.New(*gcsfusePath)
 	ctx, cancel := context.WithCancel(context.Background())
-	// k8stoken, err := getK8sToken("/var/run/secrets/kubernetes.io/serviceaccount/token")
-	// if err != nil {
-	// 	klog.Errorf("failed to get k8s token from path %v", err)
-	// } else {
-	// 	klog.Infof("k8s token %s", k8stoken)
-	// 	stsToken, err := fetchIdentityBindingToken(ctx, k8stoken)
-	// 	if err != nil {
-	// 		klog.Errorf("failed to get sts token from path %v", err)
-	// 	} else {
-	// 		klog.Infof("sts token %s", stsToken.AccessToken)
-	// 	}
-	// }
-
-	token, err := fetchTokenFromCSI()
+	k8stoken, err := getK8sToken("/gcsfuse-sa-token/token")
 	if err != nil {
-		klog.Error("fetchTokenFromCSI err: %v", err)
+		klog.Errorf("failed to get k8s token from path %v", err)
+	} else {
+		klog.Infof("k8s token %s", k8stoken)
+		stsToken, err = fetchIdentityBindingToken(ctx, k8stoken)
+		if err != nil {
+			klog.Errorf("failed to get sts token from path %v", err)
+		} else {
+			klog.Infof("sts token %s", stsToken.AccessToken)
+		}
 	}
 
+	// smoke test bucket access with the token
 	tm := sidecarmounter.NewTokenManager()
-	ts := tm.GetTokenSource(token)
+	ts := tm.GetTokenSource(stsToken)
 	sm, err := storage.NewGCSServiceManager()
 	if err != nil {
 		klog.Fatalf("Failed to set up storage service manager: %v", err)
@@ -112,6 +111,8 @@ func main() {
 		klog.Errorf("failed to write object %s bucket %s, err: %v", objectName, bucketName, err)
 	}
 	klog.Infof("object %s with content %q uploaded to bucket %s success", objectName, content, bucketName)
+
+	go startTokenServer(ctx)
 
 	for _, sp := range socketPaths {
 		// sleep 1.5 seconds before launch the next gcsfuse to avoid
@@ -193,7 +194,7 @@ func fetchIdentityBindingToken(ctx context.Context, k8sSAToken string) (*oauth2.
 	audience := fmt.Sprintf(
 		"identitynamespace:%s:%s",
 		"saikatroyc-stateful-joonix.svc.id.goog", // identity pool
-		"https://container.googleapis.com/v1/projects/saikatroyc-stateful-joonix/locations/us-central1-c/clusters/cluster-1", // identity provider
+		"https://container.googleapis.com/v1/projects/saikatroyc-stateful-joonix/locations/us-central1-c/clusters/cluster-token-poc-1", // identity provider
 	)
 	klog.Infof("audience: %s", audience)
 	stsRequest := &sts.GoogleIdentityStsV1ExchangeTokenRequest{
@@ -207,7 +208,7 @@ func fetchIdentityBindingToken(ctx context.Context, k8sSAToken string) (*oauth2.
 
 	stsResponse, err := stsService.V1.Token(stsRequest).Do()
 	if err != nil {
-		return nil, fmt.Errorf("IdentityBindingToken exchange error with audience %q: %w", audience, err)
+		return nil, fmt.Errorf("IdentityBindingToken exchange error with audience %q: %v", audience, err)
 	}
 
 	return &oauth2.Token{
@@ -261,4 +262,66 @@ func fetchTokenFromCSI() (*oauth2.Token, error) {
 	}
 	klog.Infof("unmarshall success, token %s", token.AccessToken)
 	return token, nil
+}
+
+func startTokenServer(ctx context.Context) {
+	// Create a unix domain socket and listen for incoming connections.
+	socket, err := net.Listen("unix", tokenUrlSocketPath)
+	if err != nil {
+		klog.Errorf("failed to create socket %q: %v", tokenUrlSocketPath, err)
+		// result <- err
+		return
+	}
+
+	klog.Infof("created a listener using the socket path %s", tokenUrlSocketPath)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		_, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		klog.Infof("got request on socket path %s", tokenUrlSocketPath)
+		// queryParams := r.URL.Query()
+		// for key, values := range queryParams {
+		// 	klog.Infof("Query parameter %q: %v", key, values)
+		// }
+		ctx, cancel := context.WithCancel(context.Background())
+		k8stoken, err := getK8sToken("/gcsfuse-sa-token/token")
+		var stsToken *oauth2.Token
+		if err != nil {
+			klog.Errorf("failed to get k8s token from path %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		klog.Infof("k8s token %s", k8stoken)
+		stsToken, err = fetchIdentityBindingToken(ctx, k8stoken)
+		if err != nil {
+			klog.Errorf("failed to get sts token from path %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		klog.Infof("sts token %s", stsToken.AccessToken)
+
+		// Marshal the oauth2.Token object to JSON
+		jsonToken, err := json.Marshal(stsToken)
+		if err != nil {
+			klog.Errorf("failed to marshal token to JSON: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, string(jsonToken))
+	})
+
+	server := http.Server{
+		Handler:      mux,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+	}
+
+	// result <- nil
+	if err := server.Serve(socket); err != nil {
+		klog.Errorf("failed to start the token server for %q: %v", tokenUrlSocketPath, err)
+	}
 }

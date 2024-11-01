@@ -282,23 +282,23 @@ func (s *nodeServer) NodePublishVolume(ctx context.Context, req *csi.NodePublish
 	}
 
 	// prepare a server to listen for token requests
-	vs, ok := s.volumeStateStore[targetPath]
-	if !ok {
-		s.volumeStateStore[targetPath] = &volumeState{}
-		vs = s.volumeStateStore[targetPath]
-	}
+	// vs, ok := s.volumeStateStore[targetPath]
+	// if !ok {
+	// 	s.volumeStateStore[targetPath] = &volumeState{}
+	// 	vs = s.volumeStateStore[targetPath]
+	// }
 
-	if !vs.tokenServerStarted {
-		errChan := make(chan error)
-		go s.startTokenServer(ctx, targetPath, "/sockets", errChan)
-		err := <-errChan
-		if err != nil {
-			klog.Errorf("Failed to start token server: %v", err)
-			return nil, status.Error(codes.Internal, err.Error())
-		}
-		klog.Infof("Started token server")
-		vs.tokenServerStarted = true
-	}
+	// if !vs.tokenServerStarted {
+	// 	errChan := make(chan error)
+	// 	go s.startTokenServer(ctx, targetPath, "/sockets", errChan)
+	// 	err := <-errChan
+	// 	if err != nil {
+	// 		klog.Errorf("Failed to start token server: %v", err)
+	// 		return nil, status.Error(codes.Internal, err.Error())
+	// 	}
+	// 	klog.Infof("Started token server")
+	// 	vs.tokenServerStarted = true
+	// }
 
 	// Check if the sidecar container is still required,
 	// if not, put an exit file to the emptyDir path to

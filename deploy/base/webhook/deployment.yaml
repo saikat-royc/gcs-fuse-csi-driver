@@ -45,7 +45,7 @@ spec:
               drop:
                 - ALL
           image: gke.gcr.io/gcs-fuse-csi-driver-webhook
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           args:
             - --sidecar-cpu-limit=0
             - --sidecar-cpu-request=250m

@@ -24,17 +24,20 @@ import (
 )
 
 const (
-	SidecarContainerName                  = "gke-gcsfuse-sidecar"
-	SidecarContainerTmpVolumeName         = "gke-gcsfuse-tmp"
-	SidecarContainerTmpVolumeMountPath    = "/gcsfuse-tmp"
-	SidecarContainerBufferVolumeName      = "gke-gcsfuse-buffer"
-	SidecarContainerBufferVolumeMountPath = "/gcsfuse-buffer"
-	SidecarContainerCacheVolumeName       = "gke-gcsfuse-cache"
-	SidecarContainerCacheVolumeMountPath  = "/gcsfuse-cache"
+	SidecarContainerName                   = "gke-gcsfuse-sidecar"
+	SidecarContainerTmpVolumeName          = "gke-gcsfuse-tmp"
+	SidecarContainerTmpVolumeMountPath     = "/gcsfuse-tmp"
+	SidecarContainerBufferVolumeName       = "gke-gcsfuse-buffer"
+	SidecarContainerBufferVolumeMountPath  = "/gcsfuse-buffer"
+	SidecarContainerCacheVolumeName        = "gke-gcsfuse-cache"
+	SidecarContainerCacheVolumeMountPath   = "/gcsfuse-cache"
+	SidecarContainerSATokenVolumeName      = "gcsfuse-sa-token"
+	SidecarContainerSATokenVolumeMountPath = "/gcsfuse-sa-token"
 
 	// See the nonroot user discussion: https://github.com/GoogleContainerTools/distroless/issues/443
-	NobodyUID = 65534
-	NobodyGID = 65534
+	NobodyUID           = 65534
+	NobodyGID           = 65534
+	tokenExpiryDuration = 600
 )
 
 var (
@@ -59,6 +62,23 @@ var (
 		},
 	}
 
+	saTokenVolume = corev1.Volume{
+		Name: SidecarContainerSATokenVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			Projected: &corev1.ProjectedVolumeSource{
+				Sources: []corev1.VolumeProjection{
+					{
+						ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+							Audience:          "saikatroyc-stateful-joonix.svc.id.goog",
+							ExpirationSeconds: &[]int64{tokenExpiryDuration}[0],
+							Path:              "token",
+						},
+					},
+				},
+			},
+		},
+	}
+
 	TmpVolumeMount = corev1.VolumeMount{
 		Name:      SidecarContainerTmpVolumeName,
 		MountPath: SidecarContainerTmpVolumeMountPath,
@@ -72,6 +92,10 @@ var (
 	cacheVolumeMount = corev1.VolumeMount{
 		Name:      SidecarContainerCacheVolumeName,
 		MountPath: SidecarContainerCacheVolumeMountPath,
+	}
+	saTokenVolumeMount = corev1.VolumeMount{
+		Name:      SidecarContainerSATokenVolumeName,
+		MountPath: SidecarContainerSATokenVolumeMountPath,
 	}
 )
 
@@ -112,7 +136,7 @@ func GetSidecarContainerSpec(c *Config) corev1.Container {
 			Limits:   limits,
 			Requests: requests,
 		},
-		VolumeMounts: []corev1.VolumeMount{TmpVolumeMount, buffVolumeMount, cacheVolumeMount},
+		VolumeMounts: []corev1.VolumeMount{TmpVolumeMount, buffVolumeMount, cacheVolumeMount, saTokenVolumeMount},
 	}
 
 	return container
@@ -122,6 +146,7 @@ func GetSidecarContainerSpec(c *Config) corev1.Container {
 // skipping the existing custom volumes.
 func GetSidecarContainerVolumeSpec(existingVolumes ...corev1.Volume) []corev1.Volume {
 	volumes := []corev1.Volume{tmpVolume}
+	volumes = append(volumes, saTokenVolume)
 	var bufferVolumeExists, cacheVolumeExists bool
 
 	for _, v := range existingVolumes {
@@ -132,7 +157,6 @@ func GetSidecarContainerVolumeSpec(existingVolumes ...corev1.Volume) []corev1.Vo
 			cacheVolumeExists = true
 		}
 	}
-
 	if !bufferVolumeExists {
 		volumes = append(volumes, buffVolume)
 	}
