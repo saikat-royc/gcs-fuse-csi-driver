@@ -35,7 +35,7 @@ import (
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
 )
 
-const DefaultName = "gcsfuse.csi.storage.gke.io"
+const DefaultName = "test-csi"
 
 type FeatureScanner struct {
 	Enabled bool
