@@ -1,0 +1,76 @@
+# Copyright 2018 The Kubernetes Authors.
+# Copyright 2022 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: gcs-csi-example
+  name: jupyter-notebook-server
+spec:
+  selector:
+    app: jupyter-notebook-server
+  ports:
+  - name: name-of-service-port
+    protocol: TCP
+    port: 8888
+    targetPort: http-web-svc
+  type: LoadBalancer
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: gcs-csi-example
+  name: jupyter-notebook-server
+  labels:
+    app: jupyter-notebook-server
+  annotations:
+    gke-gcsfuse/volumes: "true"
+spec:
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 100
+    fsGroup: 100
+  containers:
+  - name: jupyter-notebook-server
+    image: jupyter/tensorflow-notebook:latest
+    # password: testtest
+    args: ["start-notebook.sh", "--NotebookApp.password='argon2:$argon2id$v=19$m=10240,t=10,p=8$1zOa5vwUaYQlPAcOCwQD9w$x2KByFJzFDdrt32pQ1Hvv/gImq5yqO2D136bJbuIfN8'"]
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+      requests:
+        cpu: 100m
+        memory: 500Mi
+    ports:
+    - containerPort: 8888
+      name: http-web-svc
+    volumeMounts:
+    - name: gcs-fuse-csi-ephemeral-non-root
+      mountPath: /home/jovyan/gcs_bucket # jovyan is the default user
+  serviceAccountName: gcs-csi
+  volumes:
+  - name: gcs-fuse-csi-ephemeral-non-root
+    csi:
+      driver: gcsfuse.csi.storage.gke.io
+      volumeAttributes:
+        bucketName: <bucket-name> # unique bucket name
+        fileCacheCapacity: "-1"
+        fileCacheForRangeRead: "true"
+        metadataStatCacheCapacity: "-1"
+        metadataTypeCacheCapacity: "-1"
+        metadataCacheTTLSeconds: "-1"
+        gcsfuseLoggingSeverity: "debug"
+        mountOptions: "implicit-dirs,uid=1000,gid=100" # the image uses uid 1000 and gid 100 by default

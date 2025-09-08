@@ -1,0 +1,64 @@
+# ---
+# apiVersion: v1
+# kind: ServiceAccount
+# metadata:
+#   name: scanner-ksa
+#   namespace: default
+#   # --- Optional: For GKE Workload Identity (if scanner needs GCP access e.g., GCS) ---
+#   # If your scanner directly interacts with GCP APIs (like the previous GCS example),
+#   # uncomment and configure this annotation to link to your Google Service Account.
+#   # The python script approach might authenticate differently (e.g. node SA),
+#   # but if the Go code itself needed it, you'd use this.
+#   # annotations:
+#   #   iam.gke.io/gcp-service-account: your-gsa-name@your-gcp-project-id.iam.gserviceaccount.com
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  # ClusterRole is needed because PersistentVolumes are cluster-scoped resources.
+  name: scanner-role
+rules:
+  - apiGroups: [""] # Core API group
+    resources: ["persistentvolumes"]
+    verbs:
+      - "get"   # Needed by Lister/Informer and for fetching PV during sync
+      - "list"  # Needed by Lister/Informer at startup/resync
+      - "watch" # Needed by Informer
+      - "patch" # Needed to update annotations on the PV
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: scanner-binding
+subjects:
+  - kind: ServiceAccount
+    name: scanner-ksa
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: scanner-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: scanner
+  namespace: default
+spec:
+  serviceAccount: scanner-ksa
+  containers:
+  - name: wuwei-controller
+    imagePullPolicy: Always
+    image: gcr.io/saikatroyc-stateful-joonix/scanner:v1
+    resources:
+      limits:
+        cpu: "5"
+        memory: 10Gi
+    volumeMounts:
+    - mountPath: /bucket-info-vol
+      name: bucket-info-vol
+  volumes:
+  - name: bucket-info-vol
+    emptyDir:
+      sizeLimit: 1Gi

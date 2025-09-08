@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-a3-h100
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vllm-a3-h100
+  template:
+    metadata:
+      labels:
+        app: vllm-a3-h100
+      annotations:
+        gke-gcsfuse/volumes: "true"
+        #gke-gcsfuse/cpu-limit: "0"
+        #gke-gcsfuse/memory-limit: "0"
+        #gke-gcsfuse/ephemeral-storage-limit: "0"
+    spec:
+      serviceAccountName: vllm-a3-h100
+      nodeSelector:
+        node.kubernetes.io/instance-type: a3-highgpu-8g
+      containers:
+      - name: vllm-a3-h100
+        image: us-docker.pkg.dev/vertex-ai/vertex-vision-model-garden-dockers/pytorch-vllm-serve:20240930_0945_RC00
+        command: ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+        args:
+        - --host=0.0.0.0
+        - --port=8000
+        - --tensor-parallel-size=8
+        - --max-model-len=8192
+        - --model=meta-llama/Meta-Llama-3.1-70B
+        - --download-dir=/data
+        env: 
+        - name: HUGGING_FACE_HUB_TOKEN
+          value: "<HF token>"
+        - name: VLLM_XLA_CACHE_PATH
+          value: "/data"
+        ports:
+        - containerPort: 8000
+        resources:
+          limits:
+            nvidia.com/gpu: 8
+        readinessProbe:
+          tcpSocket:
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        volumeMounts:
+        - name: gcs-fuse-csi-ephemeral
+          mountPath: /data
+        - mountPath: /dev/shm
+          name: dshm
+      volumes:
+      - name: dshm
+        emptyDir:
+          medium: Memory
+      - name: gcs-fuse-csi-ephemeral
+        csi:
+          driver: gcsfuse.csi.storage.gke.io
+          volumeAttributes:
+            bucketName: vllm-hf-cache
+            mountOptions: "implicit-dirs"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: service
+spec:
+  selector:
+    app: vllm-a3-h100
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8000  
+      targetPort: 8000

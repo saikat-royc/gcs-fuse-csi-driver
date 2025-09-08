@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: demopod-lssd-raw-blk
+  annotations:
+    gke-gcsfuse/volumes: "true"
+spec:
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: "cloud.google.com/gke-nodepool"
+            operator: In
+            values:
+            - "pool-lssd-raw-blk"
+  containers:
+  - image: busybox
+    name: busybox
+    command: ["sleep"]
+    args: ["infinity"]
+    volumeMounts:
+    - name: gcs-fuse-csi-static
+      mountPath: /data
+      readOnly: true
+  serviceAccountName: pod-ksa
+  volumes:
+  - name: gcs-fuse-csi-static
+    persistentVolumeClaim:
+      claimName: pvc-ds

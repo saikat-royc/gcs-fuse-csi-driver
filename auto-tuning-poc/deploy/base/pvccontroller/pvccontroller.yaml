@@ -1,0 +1,90 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pvccontroller-ksa
+  namespace: default
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pvccontroller-role
+rules:
+  # Permissions for PVCs (watching, getting status)
+  - apiGroups: [""] # core API group
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch"]
+  # Permissions for StorageClasses (getting to check provisioner)
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+  # Permissions for PVs (creating, deleting, getting for checks)
+  - apiGroups: [""] # core API group
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch", "create", "delete"] # Added list/watch for potential future lister use
+  # Permissions for GCPDataSource CRD (direct fetch via REST client)
+  # Granting get/list/watch is standard practice even for direct fetch
+  - apiGroups: [datalayer.gke.io]
+    resources: [gcpdatasources]
+    verbs: [get, list, watch]
+  # Permissions for Events (optional: if you add event recording)
+  # - apiGroups: [""] # core API group
+  #   resources: ["events"]
+  #   verbs: ["create", "patch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pvccontroller-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: pvccontroller-role # Match ClusterRole name
+subjects:
+  - kind: ServiceAccount
+    name: pvccontroller-ksa # Match ServiceAccount name
+    namespace: default # Match ServiceAccount namespace
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pvccontroller
+  # Namespace where the pod and its service account reside
+  namespace: default # Or "default", or your controller namespace
+  labels:
+    # Labels are useful for selecting the pod
+    app: pvccontroller
+spec:
+  serviceAccount: pvccontroller-ksa
+  containers:
+  - name: pvc-controller # Container name
+    image: gcr.io/saikatroyc-stateful-joonix/pvccontroller:v1
+    imagePullPolicy: Always # Or IfNotPresent
+
+    # Arguments passed to the ENTRYPOINT ["/manager"] in the container
+    args:
+      - "--workers=1" # Adjust number of workers if desired
+      - "--resync-period=10m" # Example: Set resync period
+      # Add other flags defined in main.go if needed, e.g.:
+      # - "--kube-api-qps=30"
+      # - "--kube-api-burst=50"
+      # - "--logtostderr" # Common klog flag
+
+    # Define resource requests and limits for the controller container
+    # **ADJUST THESE VALUES** based on observed usage. Start low.
+    # The values from the scanner example (5 CPU, 10Gi) are likely excessive for this controller.
+    resources:
+      requests:
+        cpu: "10m"      # e.g., 0.1 CPU core
+        memory: "128Mi"  # e.g., 128 Mebibytes
+      # limits:
+      #   cpu: "500m"      # e.g., 0.5 CPU core
+      #   memory: "512Mi"  # e.g., 512 Mebibytes
+  # Optional: Security context for the pod
+  # securityContext:
+  #   runAsNonRoot: true
+  #   runAsUser: 65532 # Match user in Dockerfile if needed at pod level
+
+  # Optional: How long Kubernetes waits for the pod to gracefully shut down
+  # terminationGracePeriodSeconds: 30

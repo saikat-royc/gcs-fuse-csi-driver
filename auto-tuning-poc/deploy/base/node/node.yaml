@@ -1,0 +1,143 @@
+# Copyright 2018 The Kubernetes Authors.
+# Copyright 2022 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+kind: DaemonSet
+apiVersion: apps/v1
+metadata:
+  name: gcsfusecsi-node
+spec:
+  selector:
+    matchLabels:
+      k8s-app: gcs-fuse-csi-driver
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 10%
+  template:
+    metadata:
+      annotations:
+        seccomp.security.alpha.kubernetes.io/pod: "runtime/default"
+      labels:
+        k8s-app: gcs-fuse-csi-driver
+    spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      priorityClassName: csi-gcp-gcs-node
+      serviceAccount: gcsfusecsi-node-sa
+      nodeSelector:
+        kubernetes.io/os: linux
+      containers:
+        - name: gcs-fuse-csi-driver
+          securityContext:
+            privileged: true
+            readOnlyRootFilesystem: true
+          image: gke.gcr.io/gcs-fuse-csi-driver
+          imagePullPolicy: IfNotPresent
+          args:
+            - --v=5
+            - --endpoint=unix:/csi/csi.sock
+            - --nodeid=$(KUBE_NODE_NAME)
+            - --node=true
+            - --identity-provider=$(IDENTITY_PROVIDER)
+            - --metrics-endpoint=:9920
+            - --max-metric-collectors=10
+          ports:
+          - containerPort: 9920
+            name: metrics
+          resources:
+            limits:
+              cpu: 200m
+              memory: 200Mi
+            requests:
+              cpu: 5m
+              memory: 10Mi
+          env:
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: IDENTITY_PROVIDER
+              value: ""
+          volumeMounts:
+            - name: kubelet-dir
+              mountPath: /var/lib/kubelet
+              mountPropagation: "Bidirectional"
+            - name: socket-dir
+              mountPath: /csi
+            - name: fuse-socket-dir
+              mountPath: /sockets
+            - name: host-sysfs
+              mountPath: /sys
+        - name: csi-driver-registrar
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          image: registry.k8s.io/sig-storage/csi-node-driver-registrar
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--v=5"
+            - "--csi-address=/csi/csi.sock"
+            - "--kubelet-registration-path=$(DRIVER_REG_SOCK_PATH)"
+          resources:
+            limits:
+              cpu: 50m
+              memory: 100Mi
+            requests:
+              cpu: 10m
+              memory: 10Mi
+          env:
+            - name: DRIVER_REG_SOCK_PATH
+              value: /var/lib/kubelet/plugins/gcsfuse.csi.storage.gke.io/csi.sock
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+            - name: registration-dir
+              mountPath: /registration
+      volumes:
+        - name: registration-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins_registry/
+            type: Directory
+        - name: kubelet-dir
+          hostPath:
+            path: /var/lib/kubelet/
+            type: Directory
+        - name: socket-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins/gcsfuse.csi.storage.gke.io/
+            type: DirectoryOrCreate
+        - name: fuse-socket-dir
+          emptyDir: {}
+        - name: host-sysfs
+          hostPath:
+            path: /sys
+            type: Directory
+      # https://kubernetes.io/docs/concepts/configuration/taint-and-toleration/
+      # See "special case". This will tolerate everything. Node component should
+      # be scheduled on all nodes.
+      tolerations:
+        - operator: Exists
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gcsfusecsi-image-config
+data:
+  sidecar-image: gke.gcr.io/gcs-fuse-csi-driver-sidecar-mounter
+  metadata-sidecar-image: gke.gcr.io/gcs-fuse-csi-driver-metadata-prefetch

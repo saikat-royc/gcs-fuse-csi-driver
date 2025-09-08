@@ -1,0 +1,18 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: inference
+provisioner: gcsfuse.csi.storage.gke.io
+mountOptions:
+  - implicit-dirs
+  - metadata-cache:ttl-secs:-1
+  - metadata-cache:negative-ttl-secs:0
+  - file-cache:cache-file-for-range-read:true
+  - file-cache:enable-parallel-downloads:true
+  - read_ahead_kb=1024
+parameters:
+  csiDriverConfig: "skipCSIBucketAccessCheck=true,gcsfuseMetadataPrefetchOnMount=false"
+  fusefilecacheMediumPriority: "gpu:ram|lssd|pd-ssd,tpu:ram|pd-ssd,general_purpose:ram|lssd|pd-ssd" # best fit to the last storage medium
+  # fraction of the total node allocatable to be available to fuse resources (metadata and file caches)
+  fuseNodeMemoryAllocatableFactor: "0.5"
+  fuseNodeEphemeralStorageAllocatableFactor: "0.8"

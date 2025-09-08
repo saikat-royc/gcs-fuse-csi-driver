@@ -1,0 +1,121 @@
+# Copyright 2018 The Kubernetes Authors.
+# Copyright 2022 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gcs-fuse-csi-driver-webhook
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gcs-fuse-csi-driver-webhook
+  template:
+    metadata:
+      labels:
+        app: gcs-fuse-csi-driver-webhook
+      annotations:
+        seccomp.security.alpha.kubernetes.io/pod: "runtime/default"
+    spec:
+      securityContext:
+        runAsUser: 2079
+        runAsGroup: 2079
+        seccompProfile:
+          type: RuntimeDefault
+      priorityClassName: csi-gcp-gcs-webhook
+      serviceAccount: gcsfusecsi-webhook-sa
+      containers:
+        - name: gcs-fuse-csi-driver-webhook
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          image: gke.gcr.io/gcs-fuse-csi-driver-webhook
+          imagePullPolicy: IfNotPresent
+          args:
+            - --sidecar-cpu-limit=0
+            - --sidecar-cpu-request=250m
+            - --sidecar-memory-limit=0
+            - --sidecar-memory-request=256Mi
+            - --sidecar-ephemeral-storage-limit=0
+            - --sidecar-ephemeral-storage-request=5Gi
+            - --sidecar-image=$(SIDECAR_IMAGE)
+            - --metadata-sidecar-image=$(METADATA_SIDECAR_IMAGE)
+            - --sidecar-image-pull-policy=$(SIDECAR_IMAGE_PULL_POLICY)
+            - --cert-dir=/etc/tls-certs
+            - --port=22030
+            - --health-probe-bind-address=:22031
+            - --should-inject-sa-vol=true
+          env:
+            - name: SIDECAR_IMAGE_PULL_POLICY
+              value: "IfNotPresent"
+            - name: SIDECAR_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: gcsfusecsi-image-config
+                  key: sidecar-image
+            - name: METADATA_SIDECAR_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: gcsfusecsi-image-config
+                  key: metadata-sidecar-image
+          resources:
+            limits:
+              cpu: 200m
+              memory: 200Mi
+            requests:
+              cpu: 10m
+              memory: 10Mi
+          ports:
+            - name: inject
+              containerPort: 22030
+            - name: readyz
+              containerPort: 22031
+          livenessProbe:
+            httpGet:
+              scheme: HTTP
+              path: /readyz
+              port: 22031
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 15
+          volumeMounts:
+            - name: gcs-fuse-csi-driver-webhook-certs
+              mountPath: /etc/tls-certs
+              readOnly: true
+      volumes:
+        - name: gcs-fuse-csi-driver-webhook-certs
+          secret:
+            secretName: gcs-fuse-csi-driver-webhook-secret
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gcs-fuse-csi-driver-webhook
+  namespace: gcs-fuse-csi-driver
+spec:
+  selector:
+    app: gcs-fuse-csi-driver-webhook
+  ports:
+    - name: injector
+      protocol: TCP
+      port: 443
+      targetPort: 22030
+    - name: metrics
+      protocol: TCP
+      port: 8080
+      targetPort: 22032

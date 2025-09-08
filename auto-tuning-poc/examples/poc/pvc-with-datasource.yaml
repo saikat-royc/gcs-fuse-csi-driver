@@ -1,0 +1,26 @@
+apiVersion: datalayer.gke.io/v1
+kind: GCPDataSource
+metadata:
+  name: bucket-ds
+  namespace: default
+spec:
+  cloudStorage:
+    # serviceAccountName: KSA_NAME
+    uri: gs://test-wuwei-poc-100k-500k/ # optionally this can also reference a sub-dir within a bucket
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc-ds
+  namespace: default
+spec:
+  accessModes:
+  -   ReadWriteMany
+  storageClassName: inference # pointer to the storage class that bundles various perf knobs. possible values are "inference"|"training"|"checkpoint"
+  resources:
+    requests:
+      storage: 1Gi # dummy value
+  dataSourceRef:
+    apiGroup: datalayer.gke.io
+    kind: GCPDataSource
+    name: bucket-ds

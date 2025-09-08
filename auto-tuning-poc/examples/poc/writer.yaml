@@ -1,0 +1,93 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gsutil-1mib-uploader # Changed name slightly for clarity
+  namespace: default # Or your-namespace
+spec:
+  serviceAccountName: pod-ksa  
+  restartPolicy: Never
+  containers:
+  - name: uploader-container
+    image: google/cloud-sdk:alpine
+    env:
+    - name: GCS_BUCKET_NAME
+      value: "test-wuwei-poc-100k-500k"
+    - name: GCS_TARGET_DIRECTORY
+      value: "testdata" # <-- TODO: REPLACE THIS
+    - name: NUM_FILES_TO_CREATE
+      value: "200000"                       # Number of 1 MiB files to create
+    - name: FILE_START_INDEX           # <-- NEW: Starting index for filenames
+      value: "200000"                  # <-- TODO: Set your desired starting value
+    - name: FILE_SIZE_BYTES
+      value: "102400"
+    command: ["/bin/sh", "-ec"]
+    args:
+    - |
+      echo "Starting GCS 1 MiB object upload task with indexed filenames..."
+      echo "Target Bucket: ${GCS_BUCKET_NAME}"
+      echo "Target Directory: ${GCS_TARGET_DIRECTORY}"
+      echo "Number of files: ${NUM_FILES_TO_CREATE}"
+      echo "File size (bytes): ${FILE_SIZE_BYTES}"
+      echo "File Start Index: ${FILE_START_INDEX}"
+
+      # Validate numeric inputs (simple check)
+      if ! [[ "${NUM_FILES_TO_CREATE}" =~ ^[0-9]+$ ]] || ! [[ "${FILE_START_INDEX}" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: NUM_FILES_TO_CREATE and FILE_START_INDEX must be non-negative integers."
+        exit 1
+      fi
+      
+      if [ "${NUM_FILES_TO_CREATE}" -eq 0 ]; then
+        echo "NUM_FILES_TO_CREATE is 0. No files will be created or uploaded."
+        echo "Task finished successfully (no operation)."
+        exit 0
+      fi
+
+      LOCAL_UPLOAD_DIR="/tmp/upload_data_$(date +%s)_$$"
+      mkdir -p "${LOCAL_UPLOAD_DIR}"
+      if [ ! -d "${LOCAL_UPLOAD_DIR}" ]; then
+        echo "ERROR: Failed to create local upload directory: ${LOCAL_UPLOAD_DIR}"
+        exit 1
+      fi
+      cd "${LOCAL_UPLOAD_DIR}"
+      echo "Changed to directory: $(pwd)"
+
+      # Calculate the end index for the loop
+      END_INDEX=$((FILE_START_INDEX + NUM_FILES_TO_CREATE - 1))
+
+      echo "Creating ${NUM_FILES_TO_CREATE} files, from index ${FILE_START_INDEX} to ${END_INDEX}..."
+      for i in $(seq "${FILE_START_INDEX}" "${END_INDEX}"); do
+        FILE_NAME="object_${i}_1MiB.dat" # Filename now uses the new indexed 'i'
+        echo "Creating ${FILE_NAME}..."
+        dd if=/dev/urandom of="${FILE_NAME}" bs="${FILE_SIZE_BYTES}" count=1
+        if [ $? -ne 0 ]; then
+          echo "ERROR: Failed to create file ${FILE_NAME}"
+          exit 1
+        fi
+      done
+
+      echo "Successfully created files. Listing files in ${LOCAL_UPLOAD_DIR}:"
+      ls -lh
+
+      DESTINATION_GCS_PATH="gs://${GCS_BUCKET_NAME}/${GCS_TARGET_DIRECTORY}"
+
+      echo "Uploading files to ${DESTINATION_GCS_PATH}..."
+      gsutil -m cp -r . "${DESTINATION_GCS_PATH}"
+      if [ $? -ne 0 ]; then
+        echo "ERROR: gsutil cp command failed!"
+        # exit 1 # Uncomment to make the pod fail if upload fails
+      fi
+
+      echo "Upload apparently successful."
+
+      echo "Cleaning up local directory: ${LOCAL_UPLOAD_DIR}"
+      cd /
+      rm -rf "${LOCAL_UPLOAD_DIR}"
+      echo "Local cleanup complete."
+
+      echo "Task finished successfully."
+    resources:
+      requests:
+        memory: "128Mi"
+        cpu: "100m"
+      limits:
+        cpu: "500m"
